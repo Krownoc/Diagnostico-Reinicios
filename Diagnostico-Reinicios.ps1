@@ -1,173 +1,369 @@
 
-# ============================================================
-# DIAGNOSTICO DE REINICIOS - WINDOWS 11
-# Analisis de eventos de sistema de los ultimos 7 dias
-# Salida: Escritorio\Diagnostico_Reinicios.txt
-# ============================================================
+# ================================================================
+# DIAGNOSTICO INTEGRAL DE REINICIOS - WINDOWS 10 / 11
+# Version 2.0
+# Genera un informe TXT en el Escritorio
+#
+# Incluye:
+# - Reinicios y apagados inesperados
+# - Kernel-Power 41 con todos sus campos XML
+# - BugCheck / pantallazos azules
+# - Errores WHEA y hardware
+# - Errores de disco, NTFS y controladores
+# - Reinicios solicitados por procesos
+# - Eventos de arranque y apagado
+# - Errores de Windows Update
+# - Estado del sistema y tiempo desde el ultimo arranque
+# - Eventos relevantes de los ultimos 7 dias
+# - Eventos Kernel-Power 41 de los ultimos 30 dias
+#
+# Solo lectura: no modifica configuraciones del sistema.
+# ================================================================
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# Configuracion
-$desde = (Get-Date).AddDays(-7)
+# ---------------- CONFIGURACION ----------------
+
+$fechaInforme = Get-Date
+$desde7 = $fechaInforme.AddDays(-7)
+$desde30 = $fechaInforme.AddDays(-30)
+
 $escritorio = [Environment]::GetFolderPath('Desktop')
 $archivoLog = Join-Path $escritorio 'Diagnostico_Reinicios.txt'
 
-# IDs relevantes del registro Sistema
-$ids = @(
-    41, 6008, 1074, 1001, 6005, 6006,
-    12, 13, 161, 19, 20, 46
+# Eventos relevantes del registro System
+$idsSistema = @(
+    1, 2, 3, 4,
+    12, 13,
+    17, 18, 19, 20, 21,
+    41, 46,
+    55, 98,
+    1001, 1074,
+    129, 153, 157, 161,
+    4101,
+    6005, 6006, 6008
 )
 
-# Crear encabezado del informe
+# Evitar que un informe anterior se mezcle con el nuevo
 @"
-============================================================
- DIAGNOSTICO DE REINICIOS - WINDOWS
-============================================================
-Equipo:       $env:COMPUTERNAME
-Usuario:      $env:USERNAME
-Sistema:      $([Environment]::OSVersion.VersionString)
-Fecha informe: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-Periodo desde: $($desde.ToString('yyyy-MM-dd HH:mm:ss'))
-Periodo hasta: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-============================================================
+================================================================
+ INFORME DE DIAGNOSTICO DE REINICIOS
+================================================================
+Equipo:          $env:COMPUTERNAME
+Usuario:         $env:USERDOMAIN\$env:USERNAME
+Fecha del informe: $($fechaInforme.ToString('yyyy-MM-dd HH:mm:ss'))
+Periodo general: ultimos 7 dias
+Periodo Kernel-Power 41: ultimos 30 dias
+================================================================
 
 "@ | Out-File -FilePath $archivoLog -Encoding utf8
 
-# ------------------------------------------------------------
-# 1. Resumen de ultimos arranques
-# ------------------------------------------------------------
+function Add-Log {
+    param([string]$Texto)
 
-"`r`n========== ULTIMOS ARRANQUES DEL SISTEMA ==========`r`n" |
-    Out-File $archivoLog -Append -Encoding utf8
+    $Texto | Out-File -FilePath $archivoLog -Append -Encoding utf8
+}
 
-Get-CimInstance Win32_OperatingSystem |
-    Select-Object CSName, LastBootUpTime |
-    Format-List |
-    Out-String |
-    Out-File $archivoLog -Append -Encoding utf8
+function Add-EventDetail {
+    param($Evento)
 
-# ------------------------------------------------------------
-# 2. Eventos principales de reinicio y apagado
-# ------------------------------------------------------------
+    Add-Log @"
 
-"`r`n========== EVENTOS DE REINICIO Y APAGADO ==========`r`n" |
-    Out-File $archivoLog -Append -Encoding utf8
-
-$eventos = Get-WinEvent -FilterHashtable @{
-    LogName   = 'System'
-    Id        = $ids
-    StartTime = $desde
-} -ErrorAction SilentlyContinue |
-    Sort-Object TimeCreated -Descending
-
-if ($eventos) {
-    foreach ($evento in $eventos) {
-        @"
-------------------------------------------------------------
-Fecha:    $($evento.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))
-ID:       $($evento.Id)
-Nivel:    $($evento.LevelDisplayName)
-Origen:   $($evento.ProviderName)
+----------------------------------------------------------------
+Fecha:    $($Evento.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))
+ID:       $($Evento.Id)
+Nivel:    $($Evento.LevelDisplayName)
+Origen:   $($Evento.ProviderName)
+Registro: $($Evento.LogName)
 Mensaje:
-$($evento.Message)
+$($Evento.Message)
 
-"@ | Out-File $archivoLog -Append -Encoding utf8
+"@
+}
+
+# ---------------- 1. DATOS DEL SISTEMA ----------------
+
+Add-Log "`r`n========== 1. INFORMACION DEL SISTEMA =========="
+
+try {
+    $os = Get-CimInstance Win32_OperatingSystem
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $bios = Get-CimInstance Win32_BIOS
+
+    Add-Log @"
+
+Nombre del equipo: $($cs.Name)
+Fabricante: $($cs.Manufacturer)
+Modelo: $($cs.Model)
+Sistema operativo: $($os.Caption)
+Version: $($os.Version)
+Build: $($os.BuildNumber)
+Ultimo arranque: $($os.LastBootUpTime)
+BIOS: $($bios.SMBIOSBIOSVersion)
+Fabricante BIOS: $($bios.Manufacturer)
+"@
+
+    if ($os.LastBootUpTime) {
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        Add-Log ("Tiempo desde el ultimo arranque: {0} dias, {1} horas, {2} minutos" -f
+            $uptime.Days, $uptime.Hours, $uptime.Minutes)
+    }
+}
+catch {
+    Add-Log "No se pudo obtener toda la informacion del sistema."
+}
+
+# ---------------- 2. EVENTOS SYSTEM - 7 DIAS ----------------
+
+Add-Log "`r`n========== 2. EVENTOS DE SISTEMA - ULTIMOS 7 DIAS =========="
+
+$eventos = @(
+    Get-WinEvent -FilterHashtable @{
+        LogName = 'System'
+        StartTime = $desde7
+        Id = $idsSistema
+    } -ErrorAction SilentlyContinue |
+    Sort-Object TimeCreated -Descending
+)
+
+if ($eventos.Count -gt 0) {
+    foreach ($evento in $eventos) {
+        Add-EventDetail -Evento $evento
     }
 }
 else {
-    "No se encontraron eventos coincidentes en el periodo." |
-        Out-File $archivoLog -Append -Encoding utf8
+    Add-Log "No se encontraron eventos coincidentes."
 }
 
-# ------------------------------------------------------------
-# 3. Errores y advertencias relevantes del sistema
-# ------------------------------------------------------------
+# ---------------- 3. CAMPOS XML DE KERNEL-POWER 41 ----------------
 
-"`r`n========== ERRORES Y ADVERTENCIAS RELEVANTES ==========`r`n" |
-    Out-File $archivoLog -Append -Encoding utf8
+Add-Log "`r`n========== 3. KERNEL-POWER 41: DATOS INTERNOS - 30 DIAS =========="
 
-$errores = Get-WinEvent -FilterHashtable @{
-    LogName   = 'System'
-    StartTime = $desde
-    Level     = 1, 2, 3
-} -ErrorAction SilentlyContinue |
+$eventos41 = @(
+    Get-WinEvent -FilterHashtable @{
+        LogName = 'System'
+        Id = 41
+        StartTime = $desde30
+    } -ErrorAction SilentlyContinue |
+    Sort-Object TimeCreated -Descending
+)
+
+if ($eventos41.Count -gt 0) {
+    foreach ($evento in $eventos41) {
+        Add-Log @"
+
+----------------------------------------------------------------
+Kernel-Power 41
+Fecha de registro: $($evento.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))
+Record ID: $($evento.RecordId)
+"@
+
+        try {
+            $xml = [xml]$evento.ToXml()
+            $datos = $xml.Event.EventData.Data
+
+            if ($datos) {
+                foreach ($dato in $datos) {
+                    $nombre = $dato.GetAttribute('Name')
+                    $valor = $dato.InnerText
+
+                    if ([string]::IsNullOrWhiteSpace($nombre)) {
+                        $nombre = '(campo sin nombre)'
+                    }
+
+                    Add-Log ("{0} = {1}" -f $nombre, $valor)
+                }
+            }
+            else {
+                Add-Log "El evento no contiene campos EventData."
+            }
+        }
+        catch {
+            Add-Log "No se pudieron interpretar los campos XML del evento."
+        }
+
+        Add-Log "`r`nMensaje original:"
+        Add-Log $evento.Message
+    }
+}
+else {
+    Add-Log "No se encontraron eventos Kernel-Power 41 en los ultimos 30 dias."
+}
+
+# ---------------- 4. BUGCHECK Y PANTALLAZOS AZULES ----------------
+
+Add-Log "`r`n========== 4. BUGCHECK / PANTALLAZOS AZULES =========="
+
+$proveedoresBugcheck = @(
+    'Microsoft-Windows-WER-SystemErrorReporting',
+    'BugCheck'
+)
+
+$bugchecks = @(
+    Get-WinEvent -FilterHashtable @{
+        LogName = 'System'
+        StartTime = $desde30
+    } -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.ProviderName -match
-        'Kernel-Power|WHEA-Logger|BugCheck|volmgr|EventLog|User32|Kernel-General'
+        $_.ProviderName -in $proveedoresBugcheck -or
+        $_.Id -eq 1001
+    } |
+    Sort-Object TimeCreated -Descending
+)
+
+if ($bugchecks.Count -gt 0) {
+    foreach ($evento in $bugchecks) {
+        Add-EventDetail -Evento $evento
+    }
+}
+else {
+    Add-Log "No se encontraron eventos BugCheck coincidentes en el registro System."
+}
+
+Add-Log "`r`n========== ARCHIVOS DE VOLCADO =========="
+
+$dumpPaths = @(
+    "$env:SystemRoot\MEMORY.DMP",
+    "$env:SystemRoot\Minidump"
+)
+
+foreach ($ruta in $dumpPaths) {
+    if (Test-Path $ruta) {
+        Add-Log "`r`nRuta: $ruta"
+
+        if ((Get-Item $ruta).PSIsContainer) {
+            Get-ChildItem $ruta -File |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 30 Name, Length, LastWriteTime |
+                ForEach-Object {
+                    Add-Log ("Archivo: {0} | Bytes: {1} | Fecha: {2}" -f
+                        $_.Name, $_.Length, $_.LastWriteTime)
+                }
+        }
+        else {
+            $archivo = Get-Item $ruta
+            Add-Log ("Archivo: {0} | Bytes: {1} | Fecha: {2}" -f
+                $archivo.Name, $archivo.Length, $archivo.LastWriteTime)
+        }
+    }
+}
+
+# ---------------- 5. ERRORES DE HARDWARE ----------------
+
+Add-Log "`r`n========== 5. WHEA / ERRORES DE HARDWARE =========="
+
+$eventosHardware = @(
+    Get-WinEvent -FilterHashtable @{
+        LogName = 'System'
+        StartTime = $desde30
+    } -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.ProviderName -match 'WHEA-Logger|disk|storahci|stornvme|Ntfs|volmgr|Display|nvlddmkm|amdkmdag' -and
+        $_.Level -in @(1, 2, 3)
     } |
     Sort-Object TimeCreated -Descending |
     Select-Object -First 300
+)
 
-if ($errores) {
-    foreach ($evento in $errores) {
-        @"
-------------------------------------------------------------
-Fecha:    $($evento.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))
-ID:       $($evento.Id)
-Nivel:    $($evento.LevelDisplayName)
-Origen:   $($evento.ProviderName)
-Mensaje:
-$($evento.Message)
-
-"@ | Out-File $archivoLog -Append -Encoding utf8
+if ($eventosHardware.Count -gt 0) {
+    foreach ($evento in $eventosHardware) {
+        Add-EventDetail -Evento $evento
     }
 }
 else {
-    "No se encontraron errores o advertencias coincidentes." |
-        Out-File $archivoLog -Append -Encoding utf8
+    Add-Log "No se encontraron eventos coincidentes de hardware o almacenamiento."
 }
 
-# ------------------------------------------------------------
-# 4. Historial de pantallazos azules (BugCheck)
-# ------------------------------------------------------------
+# ---------------- 6. WINDOWS UPDATE ----------------
 
-"`r`n========== EVENTOS BUGCHECK / PANTALLAZOS AZULES ==========`r`n" |
-    Out-File $archivoLog -Append -Encoding utf8
+Add-Log "`r`n========== 6. WINDOWS UPDATE - ULTIMOS 7 DIAS =========="
 
-Get-WinEvent -FilterHashtable @{
-    LogName   = 'System'
-    ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'
-    StartTime = $desde
-} -ErrorAction SilentlyContinue |
-    Select-Object TimeCreated, Id, Message |
-    Format-List |
-    Out-String |
-    Out-File $archivoLog -Append -Encoding utf8
+$eventosUpdate = @(
+    Get-WinEvent -FilterHashtable @{
+        LogName = 'System'
+        ProviderName = 'Microsoft-Windows-WindowsUpdateClient'
+        StartTime = $desde7
+    } -ErrorAction SilentlyContinue |
+    Sort-Object TimeCreated -Descending |
+    Select-Object -First 150
+)
 
-# ------------------------------------------------------------
-# 5. Resumen estadistico de eventos principales
-# ------------------------------------------------------------
+if ($eventosUpdate.Count -gt 0) {
+    foreach ($evento in $eventosUpdate) {
+        Add-EventDetail -Evento $evento
+    }
+}
+else {
+    Add-Log "No se encontraron eventos de Windows Update en el registro System."
+}
 
-"`r`n========== RESUMEN POR ID DE EVENTO ==========`r`n" |
-    Out-File $archivoLog -Append -Encoding utf8
+# ---------------- 7. HISTORIAL DE APAGADOS Y ARRANQUES ----------------
 
-if ($eventos) {
+Add-Log "`r`n========== 7. SECUENCIA CRONOLOGICA DE ARRANQUES =========="
+
+$idsSecuencia = @(12, 13, 41, 1074, 6005, 6006, 6008)
+
+$secuencia = @(
+    Get-WinEvent -FilterHashtable @{
+        LogName = 'System'
+        Id = $idsSecuencia
+        StartTime = $desde30
+    } -ErrorAction SilentlyContinue |
+    Sort-Object TimeCreated
+)
+
+if ($secuencia.Count -gt 0) {
+    foreach ($evento in $secuencia) {
+        Add-Log ("{0} | ID {1} | {2} | {3}" -f
+            $evento.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'),
+            $evento.Id,
+            $evento.ProviderName,
+            (($evento.Message -replace '\s+', ' ').Trim()))
+    }
+}
+else {
+    Add-Log "No se encontraron eventos de secuencia."
+}
+
+# ---------------- 8. RESUMEN ESTADISTICO ----------------
+
+Add-Log "`r`n========== 8. RESUMEN DE EVENTOS - 7 DIAS =========="
+
+if ($eventos.Count -gt 0) {
     $eventos |
         Group-Object Id |
         Sort-Object Count -Descending |
         ForEach-Object {
-            "ID $($_.Name): $($_.Count) evento(s)"
-        } |
-        Out-File $archivoLog -Append -Encoding utf8
+            Add-Log ("ID {0}: {1} evento(s)" -f $_.Name, $_.Count)
+        }
 }
 else {
-    "Sin eventos para resumir." |
-        Out-File $archivoLog -Append -Encoding utf8
+    Add-Log "No hay eventos para resumir."
 }
 
-# ------------------------------------------------------------
-# Finalizacion
-# ------------------------------------------------------------
+# ---------------- 9. FINAL ----------------
 
-"`r`n========== FIN DEL INFORME ==========`r`n" |
-    Out-File $archivoLog -Append -Encoding utf8
+Add-Log @"
+
+================================================================
+ FIN DEL INFORME
+================================================================
+Generado: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+Archivo: $archivoLog
+
+NOTA:
+Los eventos indican lo que Windows pudo registrar.
+La ausencia de un evento no descarta una falla.
+Kernel-Power 41 no identifica por si solo la causa.
+================================================================
+"@
 
 Write-Host ""
 Write-Host "Diagnostico finalizado." -ForegroundColor Green
-Write-Host "Archivo generado: $archivoLog" -ForegroundColor Cyan
+Write-Host "Informe guardado en:" -ForegroundColor Cyan
+Write-Host $archivoLog -ForegroundColor Yellow
 Write-Host ""
 
-# Abrir el informe automaticamente
 if (Test-Path $archivoLog) {
     Invoke-Item $archivoLog
 }
